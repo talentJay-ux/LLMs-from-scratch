@@ -17,6 +17,8 @@ from torch.utils.tensorboard import SummaryWriter
 import fineweb_dataloader
 from dotenv import load_dotenv
 from pathlib import Path
+import math
+from torch.amp import autocast
 
 #####################################
 # Chapter 2
@@ -246,6 +248,20 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
             break
     return total_loss / num_batches
 
+def calculate_learning_rate(global_step, total_global_step):
+    initial_lr = 0.0001
+    peak_lr = 0.01
+    min_lr = 0.1 * initial_lr
+
+    warmup_steps = int(0.2 * total_global_step)
+    lr_increment = (peak_lr - initial_lr) / warmup_steps
+
+    if global_step < warmup_steps:
+        lr = initial_lr + global_step * lr_increment  
+    else:
+        progress = ((global_step - warmup_steps) / (total_global_step - warmup_steps))
+        lr = min_lr + (peak_lr - min_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+    return lr
 
 def evaluate_model(model, train_loader, val_loader, device):
     model.eval()
@@ -271,7 +287,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
 
 
 def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_loader_fixed, optimizer, device,
-                                   num_epochs, start_context, tokenizer):
+                                   num_epochs, global_total_step, start_context, tokenizer):
     train_losses, val_losses, track_tokens = [], [], []
     total_tokens, global_step, last_tokens = 0, -1, 0
 
@@ -296,9 +312,15 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
         for inp_batch, tgt_batch in train_loader:
             optimizer.zero_grad()
             global_step += 1
+            
+            lr = calculate_learning_rate(global_step, global_total_step)
+            for g in optimizer.param_groups:
+                g["lr"] = lr   
 
             # Forward and backward pass
-            loss = calc_loss_batch(inp_batch, tgt_batch, model, device)
+            with autocast(dtype=torch.bfloat16):
+                loss = calc_loss_batch(inp_batch, tgt_batch, model, device)
+        
             loss.backward()
             optimizer.step()
 
@@ -324,6 +346,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             # Compute cumulative average tokens/sec (excluding the first interval)
             avg_tps = float(total_tokens) / cumulative_time if cumulative_time > 0 else 0
 
+            log_writer.add_scalar("learning_rate", lr, global_step=global_step)
             log_writer.add_scalar("Loss/train_model", float(loss.item()), global_step=global_step)
 
             log_writer.add_scalar("token/total", total_tokens, global_step=global_step)
@@ -339,10 +362,9 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
 
 
             # logging and testing
-            global_total_step = 30000
-            validation_step = global_total_step * 0.01 
-            print_sample_step = global_total_step * 0.02
-            save_model_step = global_total_step * 0.1
+            validation_step = int(global_total_step * 0.01)
+            print_sample_step = int(global_total_step * 0.02)
+            save_model_step = int(global_total_step * 0.1)
 
             if global_step % validation_step == 0:
                 train_loss, val_loss = evaluate_model(model, train_loader_fixed, val_loader_fixed, device)
@@ -427,6 +449,7 @@ def main(gpt_config, settings):
         optimizer=optimizer,
         device=device,
         num_epochs=settings["num_epochs"],
+        global_total_step=settings["global_total_step"]
         start_context="Every effort moves you",
         tokenizer=tokenizer
     )
@@ -460,7 +483,8 @@ if __name__ == "__main__":
         "learning_rate": 5e-4,
         "num_epochs": 1,
         "batch_size": 64,
-        "weight_decay": 0.1
+        "weight_decay": 0.1,
+        "global_total_step" : 30000
     }
 
     train_losses, val_losses, tokens_seen, model = main(GPT_CONFIG_124M, OTHER_SETTINGS)
