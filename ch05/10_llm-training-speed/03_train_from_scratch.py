@@ -264,8 +264,8 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
             max_new_tokens=50, context_size=context_size
         )
         decoded_text = token_ids_to_text(token_ids, tokenizer)
-        print(decoded_text.replace("\n", " "))  # Compact print format
     model.train()
+    return decoded_text
 
 
 def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_loader_fixed, optimizer, device,
@@ -274,7 +274,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
     total_tokens, global_step, last_tokens = 0, -1, 0
 
     # Variables for cumulative average tokens/sec
-    cumulative_tokens, cumulative_time = 0.0, 0.0
+    cumulative_time = 0.0
 
     # CUDA-specific timing setup
     use_cuda = device.type == "cuda"
@@ -317,59 +317,56 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             last_tokens = total_tokens
             tps = tokens_interval / elapsed if elapsed > 0 else 0  # Tokens per second
 
-            cumulative_tokens += tokens_interval
             cumulative_time += elapsed
 
             # Compute cumulative average tokens/sec (excluding the first interval)
-            avg_tps = cumulative_tokens / cumulative_time if cumulative_time > 0 else 0
-
-            # Evaluate model performance (this may add overhead)
-            train_loss, val_loss = evaluate_model(model, train_loader_fixed, val_loader_fixed, device)
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            track_tokens.append(total_tokens)
+            avg_tps = float(total_tokens) / cumulative_time if cumulative_time > 0 else 0
 
             log_writer.add_scalar("Loss/train_model", float(loss.item()), global_step=global_step)
+
+            log_writer.add_scalar("token/total", total_tokens, global_step=global_step)
+            log_writer.add_scalar("token/interval", tokens_interval, global_step=global_step)
+
+            log_writer.add_scalar("time/elapsed", elapsed, global_step=global_step)
+            log_writer.add_scalar("time/cumulative_time", cumulative_time, global_step=global_step)
+
             log_writer.add_scalar("TPS/average", avg_tps, global_step=global_step)
+            log_writer.add_scalar("TPS/per_second", round(tps), global_step=global_step)
+
+            print(f"Ep {epoch+1}, Step {global_step:06d}, Step tok/sec: {round(tps)}, Avg tok/sec: {round(avg_tps)}. TrainLoss {round(loss.item())}")
+
+
+            # logging and testing
+            global_total_step = 30000
+            validation_step = global_total_step * 0.01 
+            print_sample_step = global_total_step * 0.05
+            save_model_step = global_total_step * 0.1
+
+            if global_step % validation_step == 0:
+                train_loss, val_loss = evaluate_model(model, train_loader_fixed, val_loader_fixed, device)
+                log_writer.add_scalar("Loss_eval/train", train_loss, global_step=global_step)
+                log_writer.add_scalar("Loss_eval/validation", val_loss, global_step=global_step)
+
+                if torch.cuda.is_available():
+                    device = torch.cuda.current_device()
+
+                    allocated = torch.cuda.memory_allocated(device) / 1024**3  # Convert to GB
+                    reserved = torch.cuda.memory_reserved(device) / 1024**3  # Convert to GB
+
+                    log_writer.add_scalar("memory/allocatedGB", allocated, global_step=global_step)
+                    log_writer.add_scalar("memory/reservedGB", reserved, global_step=global_step)
+
+
+            if global_step % print_sample_step == 0:
+                result = generate_and_print_sample(model, tokenizer, device, start_context)
+                log_writer.add_text("sample_response", result, global_step=global_step)
+
+            if global_step % save_model_step == 0:
+                save_model(model, "checkpoints", f"step{global_step:06d}")
 
             log_writer.flush() 
-            print(f"Ep {epoch+1}, Step {global_step:06d}, "
-                    f"Train: {train_loss:.3f}, Val: {val_loss:.3f}, "
-                    f"Step tok/sec: {round(tps)}, Avg tok/sec: {round(avg_tps)}")
-
-            # if global_step % 500 == 0:
-            #     generate_and_print_sample(model, tokenizer, device, start_context)
-            #     if torch.cuda.is_available():
-            #         device = torch.cuda.current_device()
-
-            #         allocated = torch.cuda.memory_allocated(device) / 1024**3  # Convert to GB
-            #         reserved = torch.cuda.memory_reserved(device) / 1024**3  # Convert to GB
-
-            #         print(f"\nAllocated memory: {allocated:.4f} GB")
-            #         print(f"Reserved memory: {reserved:.4f} GB\n")
-            # if global_step % 4000 == 0:
-            #     save_model(model, "checkpoints", f"step{global_step:06d}")
 
     return train_losses, val_losses, track_tokens
-
-
-def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses):
-    fig, ax1 = plt.subplots()
-
-    # Plot training and validation loss against epochs
-    ax1.plot(epochs_seen, train_losses, label="Training loss")
-    ax1.plot(epochs_seen, val_losses, linestyle="-.", label="Validation loss")
-    ax1.set_xlabel("Epochs")
-    ax1.set_ylabel("Loss")
-    ax1.legend(loc="upper right")
-
-    # Create a second x-axis for tokens seen
-    ax2 = ax1.twiny()  # Create a second x-axis that shares the same y-axis
-    ax2.plot(tokens_seen, train_losses, alpha=0)  # Invisible plot for aligning ticks
-    ax2.set_xlabel("Tokens seen")
-
-    fig.tight_layout()  # Adjust layout to make room
-    # plt.show()
 
 
 #####################################
@@ -377,6 +374,8 @@ def plot_losses(epochs_seen, tokens_seen, train_losses, val_losses):
 #####################################
 
 def main(gpt_config, settings):
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    os.environ["HF_TOKEN"] = "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"
 
     torch.manual_seed(123)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -467,8 +466,3 @@ if __name__ == "__main__":
     }
 
     train_losses, val_losses, tokens_seen, model = main(GPT_CONFIG_124M, OTHER_SETTINGS)
-
-    # Plot results
-    # epochs_tensor = torch.linspace(0, OTHER_SETTINGS["num_epochs"], len(train_losses))
-    # plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
-    # plt.savefig("loss.pdf")
