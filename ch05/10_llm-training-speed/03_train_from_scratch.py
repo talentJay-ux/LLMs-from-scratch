@@ -437,6 +437,7 @@ def main(gpt_config, settings):
 
 def save_model(model, folder, filename):
     compiled = hasattr(model, "_orig_mod")
+    os.makedirs(folder, exist_ok=True) 
     filepath = os.path.join(folder, f"{filename}-model.pth")
 
     if compiled:
