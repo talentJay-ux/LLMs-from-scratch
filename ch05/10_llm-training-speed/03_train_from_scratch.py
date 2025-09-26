@@ -307,6 +307,10 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
     print_sample_step = max(1, int(global_total_step * 0.02))
     save_model_step   = max(1, int(global_total_step * 0.10))
 
+    loss_history = []
+    loss_spike_threshold = 1.5
+    skip_count = 0
+
     if use_cuda:
         t_start = torch.cuda.Event(enable_timing=True)
         t_end = torch.cuda.Event(enable_timing=True)
@@ -327,7 +331,25 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             # Forward and backward pass
             with autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss = calc_loss_batch(inp_batch, tgt_batch, model, device)
+            current_loss = loss.item()
+
+
+            if len(loss_history) >= 10:
+                recent_loss_avg = sum(loss_history[-10:]) / 10
+                log_writer.add_scalar("Loss/recent_loss_ave", recent_loss_avg, global_step=global_step)
+                log_writer.add_scalar("Loss/current_loss", current_loss, global_step=global_step)
+
+                if current_loss > recent_loss_avg * loss_spike_threshold:
+                    skip_count += 1
+                    log_writer.add_scalar("Loss/skip_count", skip_count, global_step=global_step)
+
+                    continue
+
+           
             scaler.scale(loss / grad_accum_steps).backward()
+            loss_history.append(current_loss)
+            if len(loss_history) > 100: 
+                loss_history.pop(0)
 
             if (micro_step % grad_accum_steps) == 0:
                 scaler.unscale_(optimizer)
@@ -347,7 +369,6 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                 lr = calculate_learning_rate(global_step, global_total_step)
                 for g in optimizer.param_groups:
                     g["lr"] = lr   
-
 
                 # At evaluation intervals, measure elapsed time and tokens per second
                 if use_cuda:
