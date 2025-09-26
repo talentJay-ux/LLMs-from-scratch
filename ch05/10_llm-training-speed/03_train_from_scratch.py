@@ -459,7 +459,7 @@ def main(gpt_config, settings):
         optimizer=optimizer,
         device=device,
         num_epochs=settings["num_epochs"],
-        global_total_step=settings["global_total_step"]
+        global_total_step=settings["global_total_step"],
         start_context="Every effort moves you",
         tokenizer=tokenizer
     )
