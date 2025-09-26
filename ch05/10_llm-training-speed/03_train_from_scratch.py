@@ -301,7 +301,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
     use_cuda = device.type == "cuda"
     log_writer = SummaryWriter(flush_secs=5)
 
-    validation_step   = max(1, int(global_total_step * 0.01))
+    validation_step   = max(1, int(global_total_step * 0.001))
     print_sample_step = max(1, int(global_total_step * 0.02))
     save_model_step   = max(1, int(global_total_step * 0.10))
 
@@ -486,7 +486,7 @@ if __name__ == "__main__":
     load_dotenv(dotenv_path=Path("/teamspace/studios/this_studio/LLMs-from-scratch/.env")) 
     GPT_CONFIG_124M = {
         "vocab_size": 50304,     # Vocabulary size
-        "context_length": 2048,  # Input tokens per training example
+        "context_length": 1024,  # Input tokens per training example
         "emb_dim": 768,          # Embedding dimension
         "n_heads": 12,           # Number of attention heads
         "n_layers": 12,          # Number of layers
