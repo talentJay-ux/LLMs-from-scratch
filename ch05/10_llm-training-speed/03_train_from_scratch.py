@@ -15,6 +15,8 @@ import tiktoken
 from torch.utils.tensorboard import SummaryWriter
 
 import fineweb_dataloader
+from dotenv import load_dotenv
+from pathlib import Path
 
 #####################################
 # Chapter 2
@@ -339,7 +341,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             # logging and testing
             global_total_step = 30000
             validation_step = global_total_step * 0.01 
-            print_sample_step = global_total_step * 0.05
+            print_sample_step = global_total_step * 0.02
             save_model_step = global_total_step * 0.1
 
             if global_step % validation_step == 0:
@@ -374,9 +376,6 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
 #####################################
 
 def main(gpt_config, settings):
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    os.environ["HF_TOKEN"] = "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"
-
     torch.manual_seed(123)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"PyTorch version: {torch.__version__}")
@@ -446,9 +445,7 @@ def save_model(model, folder, filename):
         torch.save(model.state_dict(), filepath)
 
 if __name__ == "__main__":
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    os.environ["HF_TOKEN"] = "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"
-
+    load_dotenv(dotenv_path=Path("/teamspace/studios/this_studio/LLMs-from-scratch/.env")) 
     GPT_CONFIG_124M = {
         "vocab_size": 50304,     # Vocabulary size
         "context_length": 1024,  # Input tokens per training example
