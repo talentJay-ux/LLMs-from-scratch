@@ -405,7 +405,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                     log_writer.add_text("sample_response", result, global_step=global_step)
 
                 if global_step % save_model_step == 0:
-                    save_model(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, "checkpoints", f"step{global_step:06d}")
+                    save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, "checkpoints", f"step{global_step:06d}")
 
     return train_losses, val_losses, track_tokens
 
@@ -478,7 +478,7 @@ def main(gpt_config, settings):
     return train_losses, val_losses, tokens_seen, model
 
 
-def save_model(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, folder, filename):
+def save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, folder, filename):
     compiled = hasattr(model, "_orig_mod")
     os.makedirs(folder, exist_ok=True) 
     filepath = os.path.join(folder, f"{filename}-checkpoint.pth")
