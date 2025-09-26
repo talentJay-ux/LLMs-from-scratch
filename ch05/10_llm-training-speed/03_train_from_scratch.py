@@ -303,7 +303,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
     use_cuda = device.type == "cuda"
     log_writer = SummaryWriter(flush_secs=5)
 
-    validation_step   = max(1, int(global_total_step * 0.001))
+    validation_step   = max(1, int(global_total_step * 0.01))
     print_sample_step = max(1, int(global_total_step * 0.02))
     save_model_step   = max(1, int(global_total_step * 0.10))
 
@@ -405,7 +405,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                     log_writer.add_text("sample_response", result, global_step=global_step)
 
                 if global_step % save_model_step == 0:
-                    save_model(model, "checkpoints", f"step{global_step:06d}")
+                    save_model(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, "checkpoints", f"step{global_step:06d}")
 
     return train_losses, val_losses, track_tokens
 
@@ -478,15 +478,24 @@ def main(gpt_config, settings):
     return train_losses, val_losses, tokens_seen, model
 
 
-def save_model(model, folder, filename):
+def save_model(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, folder, filename):
     compiled = hasattr(model, "_orig_mod")
     os.makedirs(folder, exist_ok=True) 
-    filepath = os.path.join(folder, f"{filename}-model.pth")
-
-    if compiled:
-        torch.save(model._orig_mod.state_dict(),filepath)
-    else:
-        torch.save(model.state_dict(), filepath)
+    filepath = os.path.join(folder, f"{filename}-checkpoint.pth")
+    
+    checkpoint = {
+        'model_state_dict': model._orig_mod.state_dict() if compiled else model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+        'global_step': global_step,
+        'epoch': epoch,
+        'micro_step': micro_step,
+        'total_tokens': total_tokens,
+        'config': None  # You can add your GPT_CONFIG_124M here if needed
+    }
+    
+    torch.save(checkpoint, filepath)
+    print(f"Checkpoint saved: {filepath}")
 
 if __name__ == "__main__":
     load_dotenv(dotenv_path=Path("/teamspace/studios/this_studio/LLMs-from-scratch/.env")) 
@@ -505,7 +514,7 @@ if __name__ == "__main__":
         "batch_size": 64,
         "weight_decay": 0.1,
         "global_total_step" : 30000,
-        "grad_accum_steps": 4
+        "grad_accum_steps": 2
     }
 
     train_losses, val_losses, tokens_seen, model = main(GPT_CONFIG_124M, OTHER_SETTINGS)
