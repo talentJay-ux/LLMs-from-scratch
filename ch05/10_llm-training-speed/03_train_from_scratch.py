@@ -6,13 +6,13 @@
 
 import os
 import time
-import urllib.request
 
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import tiktoken
+from torch.utils.tensorboard import SummaryWriter
 
 import fineweb_dataloader
 
@@ -245,11 +245,11 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
     return total_loss / num_batches
 
 
-def evaluate_model(model, train_loader, val_loader, device, eval_iter, tokenizer, start_context):
+def evaluate_model(model, train_loader, val_loader, device):
     model.eval()
     with torch.no_grad():
-        train_loss = calc_loss_loader(train_loader, model, device, num_batches=eval_iter)
-        val_loss = calc_loss_loader(val_loader, model, device, num_batches=eval_iter)
+        train_loss = calc_loss_loader(train_loader, model, device)
+        val_loss = calc_loss_loader(val_loader, model, device)
     model.train()
     return train_loss, val_loss
 
@@ -269,7 +269,7 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
 
 
 def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_loader_fixed, optimizer, device,
-                                   num_epochs, eval_freq, eval_iter, start_context, tokenizer):
+                                   num_epochs, start_context, tokenizer):
     train_losses, val_losses, track_tokens = [], [], []
     total_tokens, global_step, last_tokens = 0, -1, 0
 
@@ -278,6 +278,8 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
 
     # CUDA-specific timing setup
     use_cuda = device.type == "cuda"
+    log_writer = SummaryWriter(flush_secs=5)
+
     if use_cuda:
         t_start = torch.cuda.Event(enable_timing=True)
         t_end = torch.cuda.Event(enable_timing=True)
@@ -301,51 +303,52 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             total_tokens += inp_batch.numel()
 
             # At evaluation intervals, measure elapsed time and tokens per second
-            if global_step % eval_freq == 0:
-                # End timing for the current interval
-                if use_cuda:
-                    t_end.record()
-                    torch.cuda.synchronize()  # Wait for all CUDA ops to complete.
-                    elapsed = t_start.elapsed_time(t_end) / 1000  # Convert ms to seconds
-                    t_start.record()  # Reset timer for the next interval
-                else:
-                    elapsed = time.time() - t0
-                    t0 = time.time()  # Reset timer for the next interval
+            if use_cuda:
+                t_end.record()
+                torch.cuda.synchronize()  # Wait for all CUDA ops to complete.
+                elapsed = t_start.elapsed_time(t_end) / 1000  # Convert ms to seconds
+                t_start.record()  # Reset timer for the next interval
+            else:
+                elapsed = time.time() - t0
+                t0 = time.time()  # Reset timer for the next interval
 
-                # Calculate tokens processed in this interval
-                tokens_interval = total_tokens - last_tokens
-                last_tokens = total_tokens
-                tps = tokens_interval / elapsed if elapsed > 0 else 0  # Tokens per second
+            # Calculate tokens processed in this interval
+            tokens_interval = total_tokens - last_tokens
+            last_tokens = total_tokens
+            tps = tokens_interval / elapsed if elapsed > 0 else 0  # Tokens per second
 
-                # Update cumulative counters (skip the first evaluation interval)
-                if global_step:  # This is False only when global_step == 0 (first evaluation)
-                    cumulative_tokens += tokens_interval
-                    cumulative_time += elapsed
+            cumulative_tokens += tokens_interval
+            cumulative_time += elapsed
 
-                # Compute cumulative average tokens/sec (excluding the first interval)
-                avg_tps = cumulative_tokens / cumulative_time if cumulative_time > 0 else 0
+            # Compute cumulative average tokens/sec (excluding the first interval)
+            avg_tps = cumulative_tokens / cumulative_time if cumulative_time > 0 else 0
 
-                # Evaluate model performance (this may add overhead)
-                train_loss, val_loss = evaluate_model(model, train_loader_fixed, val_loader_fixed, device, eval_iter, tokenizer, start_context)
-                train_losses.append(train_loss)
-                val_losses.append(val_loss)
-                track_tokens.append(total_tokens)
+            # Evaluate model performance (this may add overhead)
+            train_loss, val_loss = evaluate_model(model, train_loader_fixed, val_loader_fixed, device)
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+            track_tokens.append(total_tokens)
 
-                print(f"Ep {epoch+1}, Step {global_step:06d}, "
-                      f"Train: {train_loss:.3f}, Val: {val_loss:.3f}, "
-                      f"Step tok/sec: {round(tps)}, Avg tok/sec: {round(avg_tps)}")
-                if global_step % 500 == 0:
-                    generate_and_print_sample(model, tokenizer, device, start_context)
-                    if torch.cuda.is_available():
-                        device = torch.cuda.current_device()
+            log_writer.add_scalar("Loss/train_model", float(loss.item()), global_step=global_step)
+            log_writer.add_scalar("TPS/average", avg_tps, global_step=global_step)
 
-                        allocated = torch.cuda.memory_allocated(device) / 1024**3  # Convert to GB
-                        reserved = torch.cuda.memory_reserved(device) / 1024**3  # Convert to GB
+            log_writer.flush() 
+            print(f"Ep {epoch+1}, Step {global_step:06d}, "
+                    f"Train: {train_loss:.3f}, Val: {val_loss:.3f}, "
+                    f"Step tok/sec: {round(tps)}, Avg tok/sec: {round(avg_tps)}")
 
-                        print(f"\nAllocated memory: {allocated:.4f} GB")
-                        print(f"Reserved memory: {reserved:.4f} GB\n")
-                if global_step % 4000 == 0:
-                    save_model(model, "checkpoints", f"step{global_step:06d}")
+            # if global_step % 500 == 0:
+            #     generate_and_print_sample(model, tokenizer, device, start_context)
+            #     if torch.cuda.is_available():
+            #         device = torch.cuda.current_device()
+
+            #         allocated = torch.cuda.memory_allocated(device) / 1024**3  # Convert to GB
+            #         reserved = torch.cuda.memory_reserved(device) / 1024**3  # Convert to GB
+
+            #         print(f"\nAllocated memory: {allocated:.4f} GB")
+            #         print(f"Reserved memory: {reserved:.4f} GB\n")
+            # if global_step % 4000 == 0:
+            #     save_model(model, "checkpoints", f"step{global_step:06d}")
 
     return train_losses, val_losses, track_tokens
 
@@ -426,8 +429,6 @@ def main(gpt_config, settings):
         optimizer=optimizer,
         device=device,
         num_epochs=settings["num_epochs"],
-        eval_freq=10,
-        eval_iter=1,
         start_context="Every effort moves you",
         tokenizer=tokenizer
     )
@@ -468,6 +469,6 @@ if __name__ == "__main__":
     train_losses, val_losses, tokens_seen, model = main(GPT_CONFIG_124M, OTHER_SETTINGS)
 
     # Plot results
-    epochs_tensor = torch.linspace(0, OTHER_SETTINGS["num_epochs"], len(train_losses))
-    plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
-    plt.savefig("loss.pdf")
+    # epochs_tensor = torch.linspace(0, OTHER_SETTINGS["num_epochs"], len(train_losses))
+    # plot_losses(epochs_tensor, tokens_seen, train_losses, val_losses)
+    # plt.savefig("loss.pdf")

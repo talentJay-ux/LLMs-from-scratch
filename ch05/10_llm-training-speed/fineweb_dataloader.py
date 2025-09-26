@@ -203,6 +203,15 @@ if __name__ == "__main__":
     )
 
     train_eval_loader, val_eval_loader = make_fixed_eval_loaders(
-        train_loader, val_loader, max_train_batches=8, max_val_batches=16
+        train_loader, val_loader, max_train_batches=8, max_val_batches=8
     )
 
+    start = time.time()
+    n_tokens = 0
+    n_batches = 0
+    for xb, yb in train_eval_loader:
+        n_batches += 1
+        n_tokens += xb.numel()  # 每个 batch 的 token 数
+        if n_batches % 8 == 0:
+            elapsed = time.time() - start
+            print(f"[{n_batches} batches] {n_tokens} tokens, {n_tokens/elapsed:.1f} tok/s")
