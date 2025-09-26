@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from pathlib import Path
 import math
 from torch.amp import autocast
+from torch.nn.utils import clip_grad_norm_
 
 #####################################
 # Chapter 2
@@ -322,6 +323,15 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                 loss = calc_loss_batch(inp_batch, tgt_batch, model, device)
         
             loss.backward()
+
+            grad_norm_pre = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            grad_norm_post = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
+
+            log_writer.add_scalar("gradident/norm_pre_clip",  grad_norm_pre,  global_step=global_step)
+            log_writer.add_scalar("gradident/norm_post_clip", grad_norm_post, global_step=global_step)
+
+
             optimizer.step()
 
             total_tokens += inp_batch.numel()
