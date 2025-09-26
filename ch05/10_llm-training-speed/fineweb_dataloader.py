@@ -46,7 +46,7 @@ class TokenBlockIterableDataset(IterableDataset):
             if not isinstance(text, str) or not text.strip():
                 continue
 
-            toks = self.enc.encode(text)
+            toks = self.enc.encode(text, allowed_special={"<|endoftext|>"})
             # append EOT token to the end of text
             if self.add_eot:
                 toks.append(self.EOT)

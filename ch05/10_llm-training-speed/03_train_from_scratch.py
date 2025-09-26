@@ -20,6 +20,7 @@ from pathlib import Path
 import math
 from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
+from torch.cuda.amp import GradScaler
 
 #####################################
 # Chapter 2
@@ -216,7 +217,7 @@ def generate_text_simple(model, idx, max_new_tokens, context_size):
 
 
 def text_to_token_ids(text, tokenizer):
-    encoded = tokenizer.encode(text)
+    encoded = tokenizer.encode(text, allowed_special={"<|endoftext|>"})
     encoded_tensor = torch.tensor(encoded).unsqueeze(0)  # add batch dimension
     return encoded_tensor
 
@@ -251,7 +252,7 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
 
 def calculate_learning_rate(global_step, total_global_step):
     initial_lr = 0.0001
-    peak_lr = 0.01
+    peak_lr = 0.005
     min_lr = 0.1 * initial_lr
 
     warmup_steps = int(0.2 * total_global_step)
@@ -291,6 +292,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                                    num_epochs, global_total_step, start_context, tokenizer, grad_accum_steps):
     train_losses, val_losses, track_tokens = [], [], []
     total_tokens, last_tokens = 0, 0
+    scaler = GradScaler()
 
     micro_step = 0
     global_step = 0
@@ -320,20 +322,15 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
         model.train()
         for inp_batch, tgt_batch in train_loader:
             micro_step += 1
-    
+            total_tokens += inp_batch.numel()
+
             # Forward and backward pass
             with autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss = calc_loss_batch(inp_batch, tgt_batch, model, device)
-
-            total_tokens += inp_batch.numel()
-            (loss / grad_accum_steps).backward()
+            scaler.scale(loss / grad_accum_steps).backward()
 
             if (micro_step % grad_accum_steps) == 0:
-                global_step += 1
-                lr = calculate_learning_rate(global_step, global_total_step)
-                for g in optimizer.param_groups:
-                    g["lr"] = lr   
-
+                scaler.unscale_(optimizer)
                 grad_norm_pre = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
                 grad_norm_post = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
@@ -342,8 +339,14 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                 log_writer.add_scalar("gradident/norm_post_clip", grad_norm_post, global_step=global_step)
 
 
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
                 optimizer.zero_grad(set_to_none=True)
+
+                global_step += 1
+                lr = calculate_learning_rate(global_step, global_total_step)
+                for g in optimizer.param_groups:
+                    g["lr"] = lr   
 
 
                 # At evaluation intervals, measure elapsed time and tokens per second
@@ -433,11 +436,13 @@ def main(gpt_config, settings):
     # Initialize model
     ##############################
 
-    model = GPTModel(gpt_config)
+    model = GPTModel(gpt_config)  
     model = torch.compile(model)
-    model.to(device).to(torch.bfloat16)
+    model.to(device)
+
+    lr = calculate_learning_rate(0, settings["global_total_step"])
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"],
+        model.parameters(), lr=lr, weight_decay=settings["weight_decay"],
         fused=True
     )
 
@@ -448,6 +453,7 @@ def main(gpt_config, settings):
     train_eval_loader, val_eval_loader = fineweb_dataloader.make_fixed_eval_loaders(
         train_loader, val_loader, max_train_batches=8, max_val_batches=16
     )
+ 
 
     ##############################
     # Train model
@@ -490,12 +496,11 @@ if __name__ == "__main__":
         "emb_dim": 768,          # Embedding dimension
         "n_heads": 12,           # Number of attention heads
         "n_layers": 12,          # Number of layers
-        "drop_rate": 0.1,        # Dropout rate
+        "drop_rate": 0.05,        # Dropout rate
         "qkv_bias": False        # Query-key-value bias
     }
 
     OTHER_SETTINGS = {
-        "learning_rate": 0.01,
         "num_epochs": 1,
         "batch_size": 64,
         "weight_decay": 0.1,
