@@ -256,7 +256,7 @@ def calc_loss_loader(data_loader, model, device, num_batches=None):
 
 def calculate_learning_rate(global_step, total_global_step):
     initial_lr = 0.0001
-    peak_lr = 0.005
+    peak_lr = 0.0005
     min_lr = 0.1 * initial_lr
 
     warmup_steps = int(0.2 * total_global_step)
@@ -441,12 +441,6 @@ def main(gpt_config, settings):
     model = torch.compile(model)
     model.to(device)
 
-    lr = calculate_learning_rate(0, settings["global_total_step"])
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=lr, weight_decay=settings["weight_decay"],
-        fused=True
-    )
-
     decay_params = []
     no_decay_params = []
 
@@ -527,9 +521,6 @@ class LossSpikePrinter:
         self._loss_hist = []
 
     def _should_log(self, cur_loss: float, step) -> bool:
-        if step > 0 == 0:
-            return True
-
         if len(self._loss_hist) == self.spike_window:
             avg_prev = sum(self._loss_hist) / self.spike_window
 
@@ -587,7 +578,7 @@ if __name__ == "__main__":
         "emb_dim": 768,          # Embedding dimension
         "n_heads": 12,           # Number of attention heads
         "n_layers": 12,          # Number of layers
-        "drop_rate": 0.05,        # Dropout rate
+        "drop_rate": 0,        # Dropout rate
         "qkv_bias": False        # Query-key-value bias
     }
 
