@@ -20,7 +20,6 @@ from pathlib import Path
 import math
 from torch.amp import autocast
 from torch.nn.utils import clip_grad_norm_
-from torch.cuda.amp import GradScaler
 
 #####################################
 # Chapter 2
@@ -297,7 +296,6 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                                    num_epochs, global_total_step, start_context, tokenizer, grad_accum_steps):
     train_losses, val_losses, track_tokens = [], [], []
     total_tokens, last_tokens = 0, 0
-    scaler = GradScaler()
 
     micro_step = 0
     global_step = 0
@@ -335,20 +333,17 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
             # Forward and backward pass
             with autocast(device_type="cuda", dtype=torch.bfloat16):
                 loss = calc_loss_batch(inp_batch, tgt_batch, model, device, loss_spike_printer, global_step)
-            scaler.scale(loss / grad_accum_steps).backward()
+            (loss / grad_accum_steps).backward()
 
             if (micro_step % grad_accum_steps) == 0:
-                scaler.unscale_(optimizer)
                 grad_norm_pre = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
                 grad_norm_post = clip_grad_norm_(model.parameters(), max_norm=float("inf"), norm_type=2).item()
 
-                log_writer.add_scalar("gradident/norm_pre_clip",  grad_norm_pre,  global_step=global_step)
-                log_writer.add_scalar("gradident/norm_post_clip", grad_norm_post, global_step=global_step)
+                log_writer.add_scalar("gradient/norm_pre_clip",  grad_norm_pre,  global_step=global_step)
+                log_writer.add_scalar("gradient/norm_post_clip", grad_norm_post, global_step=global_step)
 
-
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
 
                 global_step += 1
@@ -411,7 +406,7 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                     log_writer.add_text("sample_response", result, global_step=global_step)
 
                 if global_step % save_model_step == 0:
-                    save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, "checkpoints", f"step{global_step:06d}")
+                    save_checkpoint(model, optimizer, global_step, epoch, micro_step, total_tokens, "checkpoints", f"step{global_step:06d}")
 
     return train_losses, val_losses, track_tokens
 
@@ -484,7 +479,7 @@ def main(gpt_config, settings):
     return train_losses, val_losses, tokens_seen, model
 
 
-def save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, total_tokens, folder, filename):
+def save_checkpoint(model, optimizer, global_step, epoch, micro_step, total_tokens, folder, filename):
     compiled = hasattr(model, "_orig_mod")
     os.makedirs(folder, exist_ok=True) 
     filepath = os.path.join(folder, f"{filename}-checkpoint.pth")
@@ -492,7 +487,6 @@ def save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, to
     checkpoint = {
         'model_state_dict': model._orig_mod.state_dict() if compiled else model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'scaler_state_dict': scaler.state_dict(),
         'global_step': global_step,
         'epoch': epoch,
         'micro_step': micro_step,
