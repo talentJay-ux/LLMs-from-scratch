@@ -447,6 +447,25 @@ def main(gpt_config, settings):
         fused=True
     )
 
+    decay_params = []
+    no_decay_params = []
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            # Exclude embeddings, LayerNorm, and biases from weight decay
+            if any(keyword in name for keyword in ['tok_emb', 'pos_emb', 'norm', 'bias']):
+                no_decay_params.append(param)
+            else:
+                decay_params.append(param)
+    print(f"Parameters with weight decay: {len(decay_params)}")
+    print(f"Parameters without weight decay: {len(no_decay_params)}")
+
+    lr = calculate_learning_rate(0, settings["global_total_step"])
+    optimizer = torch.optim.AdamW([
+        {'params': decay_params, 'weight_decay': settings["weight_decay"]},
+        {'params': no_decay_params, 'weight_decay': 0.0}
+    ], lr=lr, fused=True)
+
     train_loader, val_loader = fineweb_dataloader.get_fineweb_loaders(
         max_length=gpt_config["context_length"], batch_size=settings["batch_size"], num_workers=4, add_eot=True
     )
