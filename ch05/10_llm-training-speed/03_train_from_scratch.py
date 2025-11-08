@@ -398,10 +398,9 @@ def train_model_simple_with_timing(model, train_loader, train_loader_fixed, val_
                     log_writer.add_scalar("Loss_eval/validation", val_loss, global_step=global_step)
 
                     if torch.cuda.is_available():
-                        device = torch.cuda.current_device()
-
-                        allocated = torch.cuda.memory_allocated(device) / 1024**3  # Convert to GB
-                        reserved = torch.cuda.memory_reserved(device) / 1024**3  # Convert to GB
+                        dev_idx  = torch.cuda.current_device()
+                        allocated = torch.cuda.memory_allocated(dev_idx) / 1024**3
+                        reserved  = torch.cuda.memory_reserved(dev_idx)  / 1024**3
 
                         log_writer.add_scalar("memory/allocatedGB", allocated, global_step=global_step)
                         log_writer.add_scalar("memory/reservedGB", reserved, global_step=global_step)
@@ -504,6 +503,69 @@ def save_checkpoint(model, optimizer, scaler, global_step, epoch, micro_step, to
     torch.save(checkpoint, filepath)
     print(f"Checkpoint saved: {filepath}")
 
+
+class LossSpikePrinter:
+    def __init__(self, log_writer, tokenizer, spike_window=10, spike_factor=1.5):
+        assert spike_window >= 2
+        self.writer = log_writer
+        self.tokenizer = tokenizer
+        self.spike_window = int(spike_window)
+        self.spike_factor = float(spike_factor)
+        self._loss_hist = []
+
+    def _should_log(self, cur_loss: float, step) -> bool:
+        if step > 0 == 0:
+            return True
+
+        if len(self._loss_hist) == self.spike_window:
+            avg_prev = sum(self._loss_hist) / self.spike_window
+
+            self.writer.add_scalar("spike_debug/loss_ratio", cur_loss/avg_prev, global_step=step)
+
+            return cur_loss > avg_prev * self.spike_factor
+        return False
+    
+    def _update_loss(self, loss_f):
+        self._loss_hist.append(loss_f)
+        if len(self._loss_hist) > self.spike_window:
+            self._loss_hist = self._loss_hist[-self.spike_window:]
+
+    def _decode_batch(self, ids_batch):
+        # ids_batch: [B, T]
+        rows = ids_batch.detach().cpu().tolist()
+        return "\n\n".join(f"[seq {i}] {self.tokenizer.decode(seq)}" for i, seq in enumerate(rows))
+
+    @torch.no_grad()
+    def log_large_loss(self, logits: torch.Tensor, loss: torch.Tensor, step: int,
+                       input_ids: torch.Tensor, target_ids: torch.Tensor):
+        loss_f = float(loss.detach().item())
+        if not self._should_log(loss_f, step):
+            self.writer.add_scalar("spike_debug/should_log", 0, global_step=step)
+            self._update_loss(loss_f)
+            return
+
+        self.writer.add_scalar("spike_debug/should_log", 1, global_step=step)
+        self._update_loss(loss_f)
+
+        # Predictions from current logits (no extra forward)
+        pred_ids = logits.detach().argmax(dim=-1)  # [B, T]
+
+        # TensorBoard
+        # self.writer.add_scalar("debug/loss_spike_value", loss_f, global_step=step)
+        # self.writer.add_histogram("debug/logits_batch_hist", logits.detach().float().cpu(), global_step=step)
+
+        # Decoded whole-batch text (inputs / targets / preds)
+        inp_txt = self._decode_batch(input_ids)
+        self.writer.add_text(f"debug-{loss_f:.2f}/input_text_batch", inp_txt, global_step=step)
+
+        tgt_txt = self._decode_batch(target_ids)
+        self.writer.add_text(f"debug-{loss_f:.2f}/target_text_batch", tgt_txt, global_step=step)
+
+        pred_txt = self._decode_batch(pred_ids)
+        self.writer.add_text(f"debug-{loss_f:.2f}/pred_text_batch",   pred_txt, global_step=step)
+
+        print(f"{step}: loss: {loss_f:.2f}\n {inp_txt} \n {tgt_txt} \n {pred_txt}")
+
 if __name__ == "__main__":
     load_dotenv(dotenv_path=Path("/teamspace/studios/this_studio/LLMs-from-scratch/.env")) 
     GPT_CONFIG_124M = {
@@ -525,57 +587,3 @@ if __name__ == "__main__":
     }
 
     train_losses, val_losses, tokens_seen, model = main(GPT_CONFIG_124M, OTHER_SETTINGS)
-
-
-class LossSpikePrinter:
-    def __init__(self, log_writer, tokenizer=None, spike_window=10, spike_factor=1.5):
-        assert spike_window >= 2
-        self.writer = log_writer
-        self.tokenizer = tokenizer
-        self.spike_window = int(spike_window)
-        self.spike_factor = float(spike_factor)
-        self._loss_hist = []
-
-    def _should_log(self, cur_loss: float) -> bool:
-        if len(self._loss_hist) == self.spike_window:
-            avg_prev = sum(self._loss_hist) / self.spike_window
-            return cur_loss > avg_prev * self.spike_factor
-        return False
-    
-    def _update_loss(self, loss_f):
-        self._loss_hist.append(loss_f)
-        if len(self._loss_hist) > self.spike_window:
-            self._loss_hist = self._loss_hist[-self.spike_window:]
-
-    def _decode_batch(self, ids_batch):
-        # ids_batch: [B, T]
-        rows = ids_batch.detach().cpu().tolist()
-        return "\n\n".join(f"[seq {i}] {self.tokenizer.decode(seq)}" for i, seq in enumerate(rows))
-
-    @torch.no_grad()
-    def log_large_loss(self, logits: torch.Tensor, loss: torch.Tensor, step: int,
-                       input_ids: torch.Tensor = None, target_ids: torch.Tensor = None):
-        loss_f = float(loss.detach().item())
-        if not self._should_log(loss_f):
-            self._update_loss(loss_f)
-            return
-
-        self._update_loss(loss_f)
-
-        # Predictions from current logits (no extra forward)
-        pred_ids = logits.detach().argmax(dim=-1)  # [B, T]
-
-        # TensorBoard
-        # self.writer.add_scalar("debug/loss_spike_value", loss_f, global_step=step)
-        # self.writer.add_histogram("debug/logits_batch_hist", logits.detach().float().cpu(), global_step=step)
-
-        # Decoded whole-batch text (inputs / targets / preds)
-        if self.tokenizer is not None and input_ids is not None:
-            inp_txt = self._decode_batch(input_ids)
-            self.writer.add_text(f"debug-{loss_f:.6f}/input_text_batch", inp_txt, global_step=step)
-        if self.tokenizer is not None and target_ids is not None:
-            tgt_txt = self._decode_batch(target_ids)
-            self.writer.add_text(f"debug-{loss_f:.6f}/target_text_batch", tgt_txt, global_step=step)
-        if self.tokenizer is not None:
-            pred_txt = self._decode_batch(pred_ids)
-            self.writer.add_text(f"debug-{loss_f:.6f}/pred_text_batch",   pred_txt, global_step=step)
